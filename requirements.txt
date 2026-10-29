@@ -1,0 +1,8 @@
+PyQt6==6.11.0
+PyQt6-WebEngine==6.11.0
+
+# Solo para compilar el ejecutable
+pyinstaller==6.16.0
+
+# Solo para regenerar el icono (tools/make_icon.py)
+Pillow==12.1.1

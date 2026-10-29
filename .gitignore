@@ -218,3 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# CoreDesk
+# El .spec es la configuración de compilación del proyecto: se versiona pese a la regla *.spec
+!CoreDesk.spec
+# Configuración local del IDE
+.idea/

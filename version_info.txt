@@ -1,0 +1,28 @@
+# Información de versión que Windows muestra en Propiedades > Detalles del ejecutable
+VSVersionInfo(
+    ffi=FixedFileInfo(
+        filevers=(2, 0, 0, 0),
+        prodvers=(2, 0, 0, 0),
+        mask=0x3f,
+        flags=0x0,
+        OS=0x40004,
+        fileType=0x1,
+        subtype=0x0,
+        date=(0, 0),
+    ),
+    kids=[
+        StringFileInfo([
+            StringTable('0C0A04B0', [
+                StringStruct('CompanyName', 'World Pos Solutions'),
+                StringStruct('FileDescription', 'CoreDesk'),
+                StringStruct('FileVersion', '2.0.0'),
+                StringStruct('InternalName', 'CoreDesk'),
+                StringStruct('LegalCopyright', '© 2026 World Pos Solutions'),
+                StringStruct('OriginalFilename', 'CoreDesk.exe'),
+                StringStruct('ProductName', 'CoreDesk'),
+                StringStruct('ProductVersion', '2.0.0'),
+            ])
+        ]),
+        VarFileInfo([VarStruct('Translation', [0x0C0A, 1200])]),
+    ],
+)

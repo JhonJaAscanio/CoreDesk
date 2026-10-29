@@ -40,13 +40,6 @@ El resultado queda en `dist/CoreDesk/`. Se distribuye la carpeta completa: `Core
 carpeta `_internal` que está a su lado. Se usa el formato de carpeta porque el de un solo archivo
 descomprime Qt WebEngine en cada arranque y tarda unas cuatro veces más en abrir.
 
-## Datos locales
-
-| Dato | Ubicación |
-|---|---|
-| Perfil web (cookies, almacenamiento de sitios) y caché | `%LOCALAPPDATA%\WPOSS\Autorizador\perfil` y `\cache` |
-| Registro de errores | `%LOCALAPPDATA%\WPOSS\Autorizador\autorizador.log` |
-| Historial, sesión y tamaño de la ventana | Registro de Windows, `HKCU\Software\WPOSS\Autorizador` |
 
 Las rutas conservan el nombre anterior del proyecto (Autorizador) para no perder las sesiones existentes.
 

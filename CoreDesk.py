@@ -1,12 +1,17 @@
+import base64
+import json
 import logging
 import math
 import os
+import shutil
 import sys
 import time
 import traceback
+from datetime import datetime
 from html import escape
 
-from PyQt6.QtCore import Qt, QUrl, QSize, QRectF, QPointF, QSettings, QStandardPaths, QTimer, QStringListModel, pyqtSignal
+from PyQt6.QtCore import (Qt, QByteArray, QUrl, QSize, QRectF, QPointF, QSettings, QStandardPaths, QTimer,
+                          QStringListModel, pyqtSignal)
 from PyQt6.QtGui import (QAction, QBrush, QColor, QDesktopServices, QFont, QFontDatabase, QIcon, QKeySequence,
                          QLinearGradient, QPainter, QPainterPath, QPalette, QPen, QPixmap, QShortcut)
 from PyQt6.QtNetwork import QAuthenticator
@@ -27,6 +32,13 @@ HISTORY_LIMIT = 500
 CLOSED_TABS_LIMIT = 25
 SESSION_LIMIT = 30
 APP_USER_MODEL_ID = "CoreDesk.App"
+DATA_FOLDER = "CoreDesk"
+LOG_FILE = "coredesk.log"
+SETTINGS_ORGANIZATION = "CoreDesk"
+SETTINGS_APPLICATION = "CoreDesk"
+LEGACY_NAME = "Autorizador"
+MIGRATED_SETTINGS = ("geometry", "history", "session")
+MIGRATION_MARKER = "migracion.json"
 PERMISSION_NAMES = {
     "MediaAudioCapture": "usar tu micrófono",
     "MediaVideoCapture": "usar tu cámara",
@@ -407,16 +419,107 @@ text-decoration:none;font-weight:600}a:hover{background:#0891b2}
 <a href="{{URL}}">Volver a cargar</a></div></body></html>"""
 
 
+def local_data_root():
+    return QStandardPaths.writableLocation(QStandardPaths.StandardLocation.GenericDataLocation)
+
+
 def data_dir():
-    # Conserva la ruta de datos del nombre anterior (Autorizador) para no perder perfiles ni sesiones
-    path = os.path.join(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.GenericDataLocation),
-                        "WPOSS", "Autorizador")
+    path = os.path.join(local_data_root(), DATA_FOLDER)
     os.makedirs(path, exist_ok=True)
     return path
 
 
+def log_path():
+    return os.path.join(data_dir(), LOG_FILE)
+
+
+def app_settings():
+    return QSettings(SETTINGS_ORGANIZATION, SETTINGS_APPLICATION)
+
+
+# ------------------------------------------------------------------ migración desde el nombre anterior (Autorizador)
+
+def find_legacy_data_dir(root):
+    """Carpeta de datos de una instalación anterior: <root>\\<organización>\\Autorizador con un perfil dentro."""
+    try:
+        entries = list(os.scandir(root))
+    except OSError:
+        return None
+    for entry in entries:
+        candidate = os.path.join(entry.path, LEGACY_NAME)
+        if entry.is_dir() and os.path.isdir(os.path.join(candidate, "perfil")):
+            return candidate
+    return None
+
+
+def find_legacy_settings():
+    """Preferencias de una instalación anterior en el registro (HKCU\\Software\\<organización>\\Autorizador)."""
+    if sys.platform != "win32":
+        return None
+    software = QSettings("HKEY_CURRENT_USER\\Software", QSettings.Format.NativeFormat)
+    for organization in software.childGroups():
+        if organization == SETTINGS_ORGANIZATION:
+            continue
+        legacy = QSettings(organization, LEGACY_NAME)
+        if any(legacy.contains(key) for key in MIGRATED_SETTINGS):
+            return legacy
+    return None
+
+
+def migrate_legacy_data(new_dir, settings, legacy_dir, legacy_settings):
+    """Copia, sin mover ni borrar los originales, el perfil web y las preferencias del nombre anterior.
+
+    Se ejecuta una sola vez (queda registrado en migracion.json). Devuelve un mensaje para el usuario si la
+    copia falla; en ese caso no deja copias parciales y se reintentará en el siguiente arranque.
+    """
+    marker = os.path.join(new_dir, MIGRATION_MARKER)
+    if os.path.exists(marker):
+        return None
+    result = {"fecha": datetime.now().isoformat(timespec="seconds"), "perfil": "sin datos anteriores",
+              "preferencias": []}
+
+    if legacy_dir is not None:
+        target = os.path.join(new_dir, "perfil")
+        if os.path.exists(target):
+            result["perfil"] = "ya existía un perfil nuevo: no se copió"
+        else:
+            temporary = target + ".migrando"
+            shutil.rmtree(temporary, ignore_errors=True)
+            try:
+                shutil.copytree(os.path.join(legacy_dir, "perfil"), temporary)
+                os.replace(temporary, target)
+            except (OSError, shutil.Error) as exc:
+                shutil.rmtree(temporary, ignore_errors=True)
+                # No se registran rutas: solo el tipo de error
+                logging.error("No se pudo copiar el perfil anterior: %s", type(exc).__name__)
+                return (f"No se pudieron copiar las sesiones de la versión anterior porque algunos archivos están en "
+                        f"uso.\n\nCierra todas las ventanas de Autorizador y de {APP_NAME} y vuelve a abrir {APP_NAME}.")
+            result["perfil"] = "copiado"
+
+    if legacy_settings is not None and not any(settings.contains(key) for key in MIGRATED_SETTINGS):
+        backup = {}
+        for key in MIGRATED_SETTINGS:
+            if legacy_settings.contains(key):
+                value = legacy_settings.value(key)
+                settings.setValue(key, value)
+                backup[key] = base64.b64encode(bytes(value)).decode() if isinstance(value, QByteArray) else value
+        settings.sync()
+        # Copia de seguridad de las preferencias anteriores (el registro original no se modifica)
+        backup_dir = os.path.join(new_dir, "respaldo_migracion")
+        os.makedirs(backup_dir, exist_ok=True)
+        with open(os.path.join(backup_dir, "preferencias_anteriores.json"), "w", encoding="utf-8") as file:
+            json.dump(backup, file, ensure_ascii=False, indent=2)
+        result["preferencias"] = sorted(backup)
+
+    with open(marker, "w", encoding="utf-8") as file:
+        json.dump(result, file, ensure_ascii=False, indent=2)
+    logging.info("Migración desde la versión anterior: perfil %s, preferencias %s", result["perfil"],
+                 result["preferencias"] or "ninguna")
+    return None
+
+
 def setup_logging():
-    logging.basicConfig(filename=os.path.join(data_dir(), "autorizador.log"), level=logging.INFO, encoding="utf-8",
+    logging.basicConfig(filename=log_path(), level=logging.INFO, encoding="utf-8",
                         format="%(asctime)s %(levelname)s %(message)s")
 
     # PyQt6 cierra la aplicación ante una excepción no controlada en un slot: se registra y se avisa sin cerrar
@@ -425,7 +528,7 @@ def setup_logging():
         logging.error("Excepción no controlada:\n%s", details)
         if QApplication.instance() is not None:
             QMessageBox.critical(None, APP_NAME, f"Se produjo un error inesperado:\n{exc_value}\n\n"
-                                                 f"Los detalles se guardaron en {os.path.join(data_dir(), 'autorizador.log')}")
+                                                 f"Los detalles se guardaron en {log_path()}")
 
     sys.excepthook = excepthook
 
@@ -442,7 +545,7 @@ def set_app_user_model_id():
 
 def create_profile():
     # En Qt6 el perfil por defecto es de incógnito: se usa uno persistente para conservar las sesiones iniciadas
-    profile = QWebEngineProfile("Autorizador")
+    profile = QWebEngineProfile(APP_NAME)
     base = data_dir()
     profile.setPersistentStoragePath(os.path.join(base, "perfil"))
     profile.setCachePath(os.path.join(base, "cache"))
@@ -717,7 +820,7 @@ class MainWindow(QMainWindow):
         icon_path = resource_path("icon.ico")
         self.setWindowIcon(QIcon(icon_path) if os.path.exists(icon_path) else QIcon(logo_pixmap(64)))
 
-        self.settings = QSettings("WPOSS", "Autorizador")  # clave del nombre anterior: conserva historial y sesión
+        self.settings = app_settings()
         self.history = self.settings.value("history", [], type=list)
         self.closed_tabs = []
         self.downloads = []
@@ -1625,6 +1728,12 @@ if __name__ == "__main__":
     if "Segoe Fluent Icons" in QFontDatabase.families():
         ICON_FONT = "Segoe Fluent Icons"
     app.setStyleSheet(STYLESHEET)
+    # Debe ejecutarse antes de crear el perfil web, que bloquea su carpeta
+    migration_error = migrate_legacy_data(data_dir(), app_settings(), find_legacy_data_dir(local_data_root()),
+                                          find_legacy_settings())
+    if migration_error:
+        QMessageBox.warning(None, APP_NAME, migration_error)
+        sys.exit(1)
     profile = create_profile()
     main_window = MainWindow(profile)
     main_window.show()

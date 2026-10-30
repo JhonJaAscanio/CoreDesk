@@ -40,12 +40,21 @@ El resultado queda en `dist/CoreDesk/`. Se distribuye la carpeta completa: `Core
 carpeta `_internal` que está a su lado. Se usa el formato de carpeta porque el de un solo archivo
 descomprime Qt WebEngine en cada arranque y tarda unas cuatro veces más en abrir.
 
+## Versión anterior (Autorizador)
 
-Las rutas conservan el nombre anterior del proyecto (Autorizador) para no perder las sesiones existentes.
+La primera vez que se abre, CoreDesk copia las sesiones iniciadas, el historial y las pestañas de una
+instalación anterior de Autorizador. Los datos originales no se modifican ni se borran. Si Autorizador o una
+versión anterior de CoreDesk está abierta, sus archivos están bloqueados: CoreDesk lo avisa, no deja copias a
+medias y vuelve a intentarlo en el siguiente arranque.
 
-Si se ejecuta con el Python de la Microsoft Store, Windows redirige estos datos a
-`%LOCALAPPDATA%\Packages\PythonSoftwareFoundation.Python.3.11_…\LocalCache\`, por lo que el ejecutable y el
-script no comparten sesiones.
+Si se ejecuta con el Python de la Microsoft Store, Windows guarda los datos en una carpeta propia de ese
+Python, por lo que el ejecutable y el script no comparten sesiones.
+
+## Pruebas
+
+```bash
+py -3.11 -m unittest discover -s tests -v
+```
 
 ## Icono
 

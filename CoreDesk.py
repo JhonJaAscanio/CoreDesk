@@ -10,14 +10,14 @@ import traceback
 from datetime import datetime
 from html import escape
 
-from PyQt6.QtCore import (Qt, QByteArray, QUrl, QSize, QRectF, QPointF, QSettings, QStandardPaths, QTimer,
+from PyQt6.QtCore import (Qt, QByteArray, QUrl, QSize, QRectF, QPointF, QSettings, QStandardPaths, QTimer, QUrlQuery,
                           QStringListModel, pyqtSignal)
 from PyQt6.QtGui import (QAction, QBrush, QColor, QDesktopServices, QFont, QFontDatabase, QIcon, QKeySequence,
                          QLinearGradient, QPainter, QPainterPath, QPalette, QPen, QPixmap, QShortcut)
 from PyQt6.QtNetwork import QAuthenticator
 from PyQt6.QtWidgets import (QApplication, QCompleter, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame,
                              QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox,
-                             QProgressBar, QSizePolicy, QStackedWidget, QSystemTrayIcon, QTabBar, QToolButton,
+                             QProgressBar, QPushButton, QSizePolicy, QStackedWidget, QSystemTrayIcon, QTabBar, QToolButton,
                              QVBoxLayout, QWidget, QWidgetAction)
 from PyQt6 import sip
 from PyQt6.QtWebEngineCore import QWebEngineDownloadRequest, QWebEnginePage, QWebEngineProfile, QWebEngineSettings
@@ -91,6 +91,7 @@ class G:
     INFO = ""
     PRINT = ""
     DELETE = ""
+    EXTERNAL = ""
     FOLDER = ""
     CHECK = ""
     ZOOM_IN = ""
@@ -206,6 +207,18 @@ def make_menu(parent):
     return menu
 
 
+def google_signin_state(url):
+    """"rechazado" si Google rechazó el inicio de sesión, "inicio" en sus páginas de inicio de sesión, None si no."""
+    if url.host().lower() != "accounts.google.com":
+        return None
+    path = url.path().lower()
+    if "rejected" in path or "disallowed" in path:
+        return "rechazado"
+    if "signin" in path or "servicelogin" in path or path.startswith("/v3/"):
+        return "inicio"
+    return None
+
+
 def to_url(text):
     text = text.strip()
     if "://" in text or text.startswith(("about:", "data:")):
@@ -282,6 +295,11 @@ QProgressBar#loadBar::chunk {{
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {CYAN}, stop:1 {VIOLET});
 }}
 
+QFrame#infoBar {{ background: #0B1A2A; border-bottom: 1px solid #12324A; }}
+QFrame#infoBar[state="rechazado"] {{ background: #221A08; border-bottom: 1px solid #5A4512; }}
+QFrame#infoBar QLabel {{ color: {TEXT}; }}
+QPushButton#infoButton {{ padding: 5px 14px; background: #0E7490; border-color: {CYAN}; }}
+QPushButton#infoButton:hover {{ background: #0891B2; }}
 QFrame#findBar {{ background: {SURFACE}; border-top: 1px solid {BORDER}; }}
 QLineEdit#findInput {{
     background: #070C18; color: {TEXT};
@@ -582,6 +600,7 @@ class BrowserView(QWebEngineView):
         self.progress = 0
         # False mientras la pestaña no haya mostrado ninguna página (p. ej. un enlace de descarga con target="_blank")
         self.has_loaded = False
+        self.info_dismissed = False  # el usuario ocultó el aviso de inicio de sesión en esta pestaña
 
     def is_start_page(self):
         return self.url().scheme() in ("", "data", "about")
@@ -953,9 +972,29 @@ class MainWindow(QMainWindow):
         find.addWidget(make_button(G.CLOSE, "Cerrar (Esc)", self.hide_find_bar, size=11, box=28))
         self.find_bar.hide()
 
+        # Aviso para continuar en el navegador predeterminado cuando el inicio de sesión de Google falla aquí
+        self.info_bar = QFrame()
+        self.info_bar.setObjectName("infoBar")
+        info = QHBoxLayout(self.info_bar)
+        info.setContentsMargins(14, 6, 10, 6)
+        info.setSpacing(10)
+        self.info_icon = QLabel()
+        self.info_label = QLabel()
+        self.info_label.setWordWrap(True)
+        info_button = QPushButton("Abrir en el navegador predeterminado")
+        info_button.setObjectName("infoButton")
+        info_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        info_button.clicked.connect(lambda: self.open_in_browser())
+        info.addWidget(self.info_icon)
+        info.addWidget(self.info_label, 1)
+        info.addWidget(info_button)
+        info.addWidget(make_button(G.CLOSE, "Ocultar", self.dismiss_info_bar, size=11, box=28))
+        self.info_bar.hide()
+
         layout.addWidget(self.top_bar)
         layout.addWidget(self.nav_bar)
         layout.addWidget(self.load_bar)
+        layout.addWidget(self.info_bar)
         layout.addWidget(self.stack, 1)
         layout.addWidget(self.find_bar)
 
@@ -995,6 +1034,8 @@ class MainWindow(QMainWindow):
         self.devtools_action = action("Herramientas de desarrollador", ["F12", "Ctrl+Shift+I"], self.open_devtools, G.CODE)
         self.fullscreen_action = action("Pantalla completa", ["F11"], self.toggle_fullscreen, G.FULLSCREEN)
         self.pdf_action = action("Guardar como PDF…", ["Ctrl+P"], self.save_pdf, G.PRINT)
+        self.external_action = action("Abrir en el navegador predeterminado", ["Ctrl+Shift+B"],
+                                      self.open_in_browser, G.EXTERNAL)
         self.clear_data_action = action("Borrar datos de navegación…", ["Ctrl+Shift+Del"], self.clear_browsing_data,
                                         G.DELETE)
         self.about_action = action(f"Acerca de {APP_NAME}", [], self.show_about, G.INFO)
@@ -1010,6 +1051,7 @@ class MainWindow(QMainWindow):
         menu.addAction(self.devtools_action)
         menu.addAction(self.fullscreen_action)
         menu.addAction(self.pdf_action)
+        menu.addAction(self.external_action)
         menu.addSeparator()
         menu.addAction(self.clear_data_action)
         menu.addAction(self.about_action)
@@ -1194,6 +1236,8 @@ class MainWindow(QMainWindow):
             view = self.tab_bar.tabData(index)
             add_menu_action(menu, "Recargar", view.reload, glyph_icon(G.REFRESH, ICON, 14))
             add_menu_action(menu, "Duplicar", lambda: self.duplicate_tab(view))
+            add_menu_action(menu, "Abrir en el navegador predeterminado", lambda: self.open_in_browser(view),
+                            glyph_icon(G.EXTERNAL, ICON, 14))
             menu.addSeparator()
             add_menu_action(menu, "Cerrar pestaña", lambda: self.close_view(view), glyph_icon(G.CLOSE, ICON, 12))
             add_menu_action(menu, "Cerrar otras pestañas", lambda: self.close_other_tabs(view)).setEnabled(
@@ -1213,6 +1257,7 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(view)
         self.url_bar.set_url(QUrl() if view.is_start_page() else view.url(), force=True)
         self.update_navigation(view)
+        self.update_info_bar(view)
         self.update_window_title(view)
         self.update_zoom(view)
         self.load_bar.setValue(view.progress if view.loading else 0)
@@ -1253,9 +1298,52 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"{title} — {APP_NAME}" if title else APP_NAME)
 
     def url_changed(self, view):
+        if google_signin_state(view.url()) is None:
+            view.info_dismissed = False
         if view is self.current_view():
             self.url_bar.set_url(QUrl() if view.is_start_page() else view.url())
             self.update_navigation(view)
+            self.update_info_bar(view)
+
+    def update_info_bar(self, view):
+        state = google_signin_state(view.url())
+        if state is None or view.info_dismissed:
+            self.info_bar.hide()
+            return
+        if state == "rechazado":
+            logging.warning("Google rechazó el inicio de sesión en la vista integrada")
+            self.info_icon.setPixmap(glyph_pixmap(G.WARNING, AMBER, 16))
+            self.info_label.setText("Google no permite iniciar sesión en esta cuenta desde CoreDesk. "
+                                    "Puedes continuar en tu navegador predeterminado.")
+        else:
+            self.info_icon.setPixmap(glyph_pixmap(G.INFO, CYAN, 16))
+            self.info_label.setText("¿No puedes iniciar sesión aquí (llave de acceso, verificación o "
+                                    "«navegador no seguro»)? Continúa en tu navegador predeterminado.")
+        self.info_bar.setProperty("state", state)
+        self.repolish(self.info_bar)
+        self.info_bar.show()
+
+    def dismiss_info_bar(self):
+        self.current_view().info_dismissed = True
+        self.info_bar.hide()
+
+    def open_in_browser(self, view=None):
+        # Abre la misma dirección en el navegador del sistema; CoreDesk no lee ni transfiere credenciales
+        view = view or self.current_view()
+        url = view.url()
+        if google_signin_state(url) is not None:
+            # La dirección intermedia del inicio de sesión de Google depende de esta vista: en el otro navegador
+            # se abre el destino final (p. ej. Gmail) para que el inicio de sesión empiece desde cero
+            target = QUrl(QUrlQuery(url).queryItemValue("continue", QUrl.ComponentFormattingOption.FullyDecoded))
+            url = target if target.scheme() == "https" else QUrl("https://accounts.google.com/")
+        if url.scheme() not in ("http", "https"):
+            self.statusBar().showMessage("Esta página no se puede abrir en otro navegador", 5000)
+            return
+        if QDesktopServices.openUrl(url):
+            logging.info("Página abierta en el navegador predeterminado: %s", url.host())
+            self.statusBar().showMessage(f"Abierto en el navegador predeterminado: {url.host()}", 6000)
+        else:
+            QMessageBox.warning(self, APP_NAME, "No se pudo abrir el navegador predeterminado.")
 
     def load_started(self, view):
         view.loading = True

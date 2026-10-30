@@ -37,6 +37,9 @@ class InfoBarTest(unittest.TestCase):
         cls.settings_patch = mock.patch.object(
             CoreDesk, "app_settings", lambda: QSettings(os.path.join(cls.root, "t.ini"), QSettings.Format.IniFormat))
         cls.settings_patch.start()
+        # Nunca se abre el navegador real durante las pruebas
+        cls.browser_patch = mock.patch.object(CoreDesk.QDesktopServices, "openUrl", return_value=True)
+        cls.open_url = cls.browser_patch.start()
         cls.profile = CoreDesk.create_profile()
         cls.profile.setPersistentStoragePath(os.path.join(cls.root, "perfil"))
         cls.profile.setCachePath(os.path.join(cls.root, "cache"))
@@ -48,6 +51,7 @@ class InfoBarTest(unittest.TestCase):
         cls.window.close()
         del cls.window
         cls.settings_patch.stop()
+        cls.browser_patch.stop()
         shutil.rmtree(cls.root, ignore_errors=True)
 
     @staticmethod
@@ -56,26 +60,40 @@ class InfoBarTest(unittest.TestCase):
         QTimer.singleShot(ms, loop.quit)
         loop.exec()
 
+    def setUp(self):
+        self.open_url.reset_mock()
+
     def show_page(self, url):
         view = self.window.current_view()
         view.setHtml("<p>prueba</p>", QUrl(url))
         self.wait(1500)
         return view
 
-    def test_rejected_page_shows_warning(self):
+    def test_rejection_opens_browser_and_goes_back(self):
+        view = self.show_page("https://example.com/antes")
+        self.show_page(SIGNIN)
         self.show_page(REJECTED)
-        self.assertTrue(self.window.info_bar.isVisible())
-        self.assertEqual(self.window.info_bar.property("state"), "rechazado")
-        self.assertIn("no permite", self.window.info_label.text())
+        self.open_url.assert_called_once()
+        self.assertEqual(self.open_url.call_args[0][0].toString(), "https://mail.google.com")
+        self.assertEqual(view.url().toString(), SIGNIN)
+
+    def test_rejection_opens_browser_only_once_per_signin(self):
+        self.show_page("https://example.com/antes")
+        self.show_page(SIGNIN)
+        self.show_page(REJECTED)
+        # Al volver, Google puede redirigir otra vez al rechazo: no se abre el navegador en bucle
+        self.show_page(REJECTED)
+        self.assertEqual(self.open_url.call_count, 1)
+        # Tras salir de Google, un nuevo rechazo vuelve a abrir el navegador
+        self.show_page("https://example.com/despues")
+        self.show_page(REJECTED)
+        self.assertEqual(self.open_url.call_count, 2)
 
     def test_signin_page_shows_hint_and_can_be_dismissed(self):
         self.show_page(SIGNIN)
         self.assertTrue(self.window.info_bar.isVisible())
         self.assertEqual(self.window.info_bar.property("state"), "inicio")
         self.window.dismiss_info_bar()
-        self.assertFalse(self.window.info_bar.isVisible())
-        # Sigue oculto mientras se navega dentro del inicio de sesión
-        self.show_page(REJECTED)
         self.assertFalse(self.window.info_bar.isVisible())
         # Al salir de Google se reinicia
         self.show_page("https://example.com/")
@@ -88,10 +106,10 @@ class InfoBarTest(unittest.TestCase):
 
     def open_in_browser_url(self, url):
         self.show_page(url)
-        with mock.patch.object(CoreDesk.QDesktopServices, "openUrl", return_value=True) as open_url:
-            self.window.open_in_browser()
-        open_url.assert_called_once()
-        return open_url.call_args[0][0].toString()
+        self.open_url.reset_mock()
+        self.window.open_in_browser()
+        self.open_url.assert_called_once()
+        return self.open_url.call_args[0][0].toString()
 
     def test_open_in_browser_uses_same_url(self):
         self.assertEqual(self.open_in_browser_url("https://example.com/pagina?a=1"), "https://example.com/pagina?a=1")
@@ -106,9 +124,8 @@ class InfoBarTest(unittest.TestCase):
     def test_open_in_browser_ignores_local_pages(self):
         self.window.current_view().setHtml("<p>inicio</p>")
         self.wait(800)
-        with mock.patch.object(CoreDesk.QDesktopServices, "openUrl", return_value=True) as open_url:
-            self.window.open_in_browser()
-        open_url.assert_not_called()
+        self.window.open_in_browser()
+        self.open_url.assert_not_called()
 
 
 if __name__ == "__main__":

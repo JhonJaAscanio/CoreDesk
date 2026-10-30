@@ -601,6 +601,7 @@ class BrowserView(QWebEngineView):
         # False mientras la pestaña no haya mostrado ninguna página (p. ej. un enlace de descarga con target="_blank")
         self.has_loaded = False
         self.info_dismissed = False  # el usuario ocultó el aviso de inicio de sesión en esta pestaña
+        self.rejection_handled = False  # ya se abrió el navegador por un rechazo de Google en este inicio de sesión
 
     def is_start_page(self):
         return self.url().scheme() in ("", "data", "about")
@@ -1298,12 +1299,31 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"{title} — {APP_NAME}" if title else APP_NAME)
 
     def url_changed(self, view):
-        if google_signin_state(view.url()) is None:
+        state = google_signin_state(view.url())
+        if state is None:
             view.info_dismissed = False
+            view.rejection_handled = False
+        elif state == "rechazado" and not view.rejection_handled:
+            view.rejection_handled = True
+            QTimer.singleShot(0, lambda: self.signin_rejected(view))
         if view is self.current_view():
             self.url_bar.set_url(QUrl() if view.is_start_page() else view.url())
             self.update_navigation(view)
             self.update_info_bar(view)
+
+    def signin_rejected(self, view):
+        # Google no admite la vista integrada para esta cuenta: se continúa en el navegador del sistema
+        # (que empieza el inicio de sesión desde cero) y la pestaña vuelve a donde estaba
+        if self.index_of(view) < 0:
+            return
+        logging.warning("Google rechazó el inicio de sesión en la vista integrada; se abre el navegador")
+        self.open_in_browser(view)
+        if view.history().canGoBack():
+            view.back()
+        else:
+            view.setHtml(self.start_page_html())
+        self.statusBar().showMessage("Google no permite esta cuenta en CoreDesk: el inicio de sesión continúa en "
+                                     "tu navegador predeterminado", 10000)
 
     def update_info_bar(self, view):
         state = google_signin_state(view.url())
@@ -1311,7 +1331,6 @@ class MainWindow(QMainWindow):
             self.info_bar.hide()
             return
         if state == "rechazado":
-            logging.warning("Google rechazó el inicio de sesión en la vista integrada")
             self.info_icon.setPixmap(glyph_pixmap(G.WARNING, AMBER, 16))
             self.info_label.setText("Google no permite iniciar sesión en esta cuenta desde CoreDesk. "
                                     "Puedes continuar en tu navegador predeterminado.")

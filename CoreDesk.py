@@ -26,7 +26,7 @@ NEW_TAB_TITLE = "Nueva pestaña"
 HISTORY_LIMIT = 500
 CLOSED_TABS_LIMIT = 25
 SESSION_LIMIT = 30
-APP_USER_MODEL_ID = "WPOSS.CoreDesk"
+APP_USER_MODEL_ID = "CoreDesk.App"
 PERMISSION_NAMES = {
     "MediaAudioCapture": "usar tu micrófono",
     "MediaVideoCapture": "usar tu cámara",
